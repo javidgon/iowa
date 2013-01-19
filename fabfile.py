@@ -3,12 +3,16 @@ from ConfigParser import SafeConfigParser
 
 from fabric.api import local, run, env, cd
 from fabric.contrib.files import exists
-from fabric.operations import put, sudo
+from fabric.operations import put, get, sudo
 
 # Config.
 env.user = 'ubuntu'
-env.hosts = ['107.21.240.103']
 env.key_filename = 'controller.pem'
+env.roledefs = {
+    'dev': ['107.21.240.103'],
+    'staging': ['*'],
+    'production': ['*']
+} 
 
 projects = ['iowa', 'cluster']
 projects_path = '/home/ubuntu/www/'
@@ -22,10 +26,11 @@ def deploy(app=None, should_push=False, server_action=None):
     """
     Deploy a specific app into several remote hosts.
     :param app: The app to deploy.
-    :param push: Should also update the app's source code?.
+    :param should_push: Should also update the app's source code?.
     :param server_action: Should also start/reload the server
                           afterwards?.
     """
+
     if not app:
         print "Please specify an app"
     elif not os.path.exists(ini_folder):
@@ -48,6 +53,8 @@ def deploy(app=None, should_push=False, server_action=None):
     # Upload the latest code.
     if should_push:
         push(app)
+        
+    _fetch_log(app)
     
     if server_action:
         _make_server(server_action)
@@ -123,4 +130,23 @@ def scale(app=None, workers=None):
         
         deploy(app)
     
+def _fetch_log(app=None):
+    """
+    Fetch the latest logs.
+    :param app: The target app.
+    """
+    print "Fetching generated log..."
+    role = _get_current_role()
+    with cd(os.path.join(projects_path)):
+        get('logs/%s.log' % app, 'logs/%s.%s.log' % (role, app))
+        get('logs/uwsgi.log', 'logs/%s.uwsgi.log' % role)
+        
+def _get_current_role():
+    """
+    Helper method which returns the current role.
+    """
+    for role in env.roledefs.keys():
+        if env.host_string in env.roledefs[role]:
+            return role
+    return None
     
