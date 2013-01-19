@@ -18,7 +18,7 @@ server_config_folder = 'server'
 logs_path = '/home/ubuntu/www/logs'
 
 
-def deploy(app=None, push=False, server_action=None):
+def deploy(app=None, should_push=False, server_action=None):
     """
     Deploy a specific app into several remote hosts.
     :param app: The app to deploy.
@@ -37,7 +37,7 @@ def deploy(app=None, push=False, server_action=None):
     elif not os.path.exists(os.path.join(ini_folder, app +'.ini')):
         print "%s seems unrecheable (%s)" % (app, os.path.join(listeners_folder, app +'.ini'))
     else:
-        print "Pushing %s to the remote hosts" % app
+        print "Deploying %s to the remote hosts" % app
         with cd(os.path.join(projects_path)):
             put(os.path.join(ini_folder, app +'.ini'), os.path.join(ini_folder, app +'.ini'))
             put(os.path.join(listeners_folder, app), os.path.join(listeners_folder, app +'.ini'))
@@ -46,13 +46,26 @@ def deploy(app=None, push=False, server_action=None):
             run('cd logs && touch %s.log' % app)
             
     # Upload the latest code.
-    if push:
+    if should_push:
         push(app)
     
     if server_action:
-        make_server(server_action)
+        _make_server(server_action)
+        
+def push(app=None):
+    """
+    Push the latest app's source code into several remote
+    hosts.
+    :param app: The app to push into the hosts.
+    """
+    if not os.path.exists(app):
+        print "%s not found in you local" % app
+    else:
+        print "Pushing %s source code" % app
+        with cd(projects_path):
+            put('%s' % app, '%s' % projects_path)
     
-def make_server(action=None):
+def _make_server(action=None):
     """
     Execute some actions with the server.
     :param action: The action to execute.
@@ -67,19 +80,6 @@ def make_server(action=None):
     else:
         print "Unknown server action"
             
-def push(app=None):
-    """
-    Push the latest app's source code into several remote
-    hosts.
-    :param app: The app to push into the hosts.
-    """
-    if not os.path.exists(app):
-        print "%s not found in you local" % app
-    else:
-        print "Updating %s source code" % app
-        with cd(projects_path):
-            put('%s' % app, '%s' % projects_path)
-            
 def run_uwsgi(server_action=None):
     """
     Run uwsgi with 'emperor mode' in the hosts.
@@ -93,7 +93,7 @@ def run_uwsgi(server_action=None):
         run('cd logs && touch uwsgi.log')
 
     if server_action:
-        make_server(server_action)
+        _make_server(server_action)
         
     run('uwsgi --master --emperor %s --daemonize %s'
         ' --die-on-term --uid www-data --gid www-data'
