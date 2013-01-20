@@ -1,7 +1,8 @@
 import os
 from ConfigParser import SafeConfigParser
 
-from fabric.api import run, env, cd
+from fabric.api import run, local, env, cd
+from fabric.contrib.files import exists
 from fabric.operations import put, get, sudo
 
 # Config.
@@ -12,6 +13,9 @@ env.roledefs = {
     'staging': ['*'],
     'production': ['*']
 }
+
+# Default role will be dev.
+env.roles = ['dev']
 
 
 def _load_config(config='config.ini'):
@@ -25,14 +29,10 @@ def _load_config(config='config.ini'):
     return config
 
 
-def deploy(app=None, should_push=False,
-           server_action=None, config='config.ini'):
+def deploy(app=None, config='config.ini'):
     """
     Deploy a specific app into several remote hosts.
     :param app: The app to deploy.
-    :param should_push: Should also update the app's source code?.
-    :param server_action: Should also start/reload the server
-                          afterwards?.
     :param config: Configuration file.
     """
 
@@ -62,23 +62,20 @@ def deploy(app=None, should_push=False,
     else:
         print "Updating %s .ini file and listeners..." % app
         with cd(remote_projects_path):
+            run('mkdir -p apps')
             put(os.path.join(local_apps_ini_path, app + '.ini'),
                 os.path.join(remote_apps_ini_path, app + '.ini'))
-            put(os.path.join(local_listeners_path, app),
-                os.path.join(remote_listeners_path, app + '.ini'))
+            run('mkdir -p listeners')
+            run('mkdir -p listeners/locations')
+            put(os.path.join(local_listeners_path, 'server'),
+                os.path.join(remote_listeners_path,'server'))
+            put(os.path.join(local_listeners_path,'locations', app),
+                os.path.join(remote_listeners_path,'locations'))
             run('mkdir -p logs && cd logs && touch %s.log' % app)
         print "Done."
 
-        # Upload the latest code.
-        if should_push:
-            push(app=app, config=config)
-
     # Fetch generated logs.
     _fetch_log(app=app)
-
-    # Start/Reload if needed.
-    if server_action:
-        _make_server(server_action=server_action)
 
 
 def push(app=None, config='config.ini'):
@@ -106,7 +103,7 @@ def push(app=None, config='config.ini'):
         print "Done."
 
 
-def _make_server(server_action=None):
+def instruct_server(server_action=None):
     """
     Execute some actions with the server.
     :param action: The action to execute.
@@ -137,19 +134,17 @@ def run_uwsgi(server_action=None, config='config.ini'):
     remote_apps_ini_path = parser.get('iowa', 'remote_apps_ini_path')
     remote_logs_path = parser.get('iowa', 'remote_logs_path')
 
-    # Make sure log folder exists.
+    # Make sure log and socket folders exist.
     with cd(remote_projects_path):
-        run('mkdir logs && cd logs && touch uwsgi.log')
-
-    # Start/Reload if needed.
-    if server_action:
-        _make_server(server_action)
+        run('mkdir -p logs && cd logs && touch uwsgi.log')
+        run('mkdir -p sockets')
 
     # Run uWSGI in emperor mode.
     run('uwsgi --master --emperor %s --daemonize %s'
         ' --die-on-term --uid www-data --gid www-data'
         % (os.path.join(remote_projects_path, remote_apps_ini_path),
            os.path.join(remote_logs_path, 'uwsgi.log')))
+
 
 
 def scale(app=None, workers=None, config='config.ini'):
@@ -202,6 +197,7 @@ def _fetch_log(app=None, config='config.ini'):
 
     print "Fetching generated log..."
     role = _get_current_role()
+    local('mkdir -p logs')
     with cd(remote_projects_path):
         get('logs/%s.log' % app, 'logs/%s.%s.log' % (role, app))
         get('logs/uwsgi.log', 'logs/%s.uwsgi.log' % role)
