@@ -1,0 +1,4 @@
+location /example {
+    include uwsgi_params;
+    uwsgi_pass unix:/var/www/sockets/example.sock;
+}
