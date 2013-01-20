@@ -1,11 +1,11 @@
-Iowa - Manage your web apps in real time 
-========================================
+Iowa - Deploy and scale your web apps in real time 
+==================================================
 
 As a developer, when I deploy/scale a web app in my own servers **I want to do
 it on a fast, funny and seamless way**, without having to *edit files* or *make
 ssh connections* each time. Imagine it on several servers. It's simply annoying.
 
-I always was amazed how easy and fun was deploy/scale with some PASS services
+I always was amazed how easy and fun was deploy/scale with some PaaS services
 as *Heroku*. This is an attempt to create an open-source system able to
 do most of those common tasks following the same philosophy, just using
 **the command line**.
