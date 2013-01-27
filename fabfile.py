@@ -1,13 +1,15 @@
 import os
 from ConfigParser import SafeConfigParser
 
-from fabric.api import run, local, env, cd
+from fabric.api import run, local, env, cd, hide
 from fabric.contrib.files import exists
 from fabric.operations import put, get, sudo
 
+from conf.yaml_reader import YamlReader
+
 # Config.
 env.user = 'ubuntu'
-env.key_filename = 'controller.pem'
+env.key_filename = '~/.ssh/controller.pem'
 env.roledefs = {
     'dev': ['107.21.240.103'],
     'staging': ['*'],
@@ -18,67 +20,63 @@ env.roledefs = {
 env.roles = ['dev']
 
 
-def _load_config(config='config.ini'):
+def _load_config(path='conf/config.ini'):
     """
     Load configuration.
     """
 
     config = SafeConfigParser()
-    config.read('config.ini')
+    config.read(path)
 
     return config
 
 
-def deploy(app=None, config='config.ini'):
+def deploy(app=None, config='conf/config.ini'):
     """
     Deploy a specific app into several remote hosts.
     :param app: The app to deploy.
     :param config: Configuration file.
     """
-
-    parser = _load_config(config)
+    
+    if os.path.exists(config):
+        parser = _load_config(config)
+    else:
+        print "Are you in the right path?"
+        sys.exit(1)
 
     # Local paths.
-    local_apps_ini_path = parser.get('iowa', 'local_apps_ini_path')
-    local_listeners_path = parser.get('iowa', 'local_listeners_path')
+    local_servers_path = parser.get('iowa', 'local_servers_path')
+    local_projects_path = parser.get('iowa', 'local_projects_path')
 
     # Remote paths.
+    remote_servers_path = parser.get('iowa', 'remote_servers_path')
     remote_projects_path = parser.get('iowa', 'remote_projects_path')
-    remote_apps_ini_path = parser.get('iowa', 'remote_apps_ini_path')
-    remote_listeners_path = parser.get('iowa', 'remote_listeners_path')
 
     if not app:
         print "Please specify an app"
-    elif not os.path.exists(local_apps_ini_path):
+    elif not os.path.exists(os.path.join(local_projects_path, app)):
         print "The app folder doesn't exist in your local"
-    elif not os.path.exists(local_listeners_path):
-        print "The listeners folder doesn't exist in your local"
-    elif not os.path.exists(os.path.join(local_apps_ini_path, app + '.ini')):
-        print "%s.ini seems unrecheable (%s)" \
-            % (app, os.path.join(local_apps_ini_path, app + '.ini'))
-    elif not os.path.exists(os.path.join(local_apps_ini_path, app + '.ini')):
-        print "%s seems unrecheable (%s)" \
-            % (app, os.path.join(local_listeners_path, app + '.ini'))
+    elif not os.path.exists(local_servers_path):
+        print "The servers folder doesn't exist in your local"
+    elif not os.path.exists(os.path.join(local_projects_path, app, app + '.ini')):
+        print "%s.ini seems unreachable (%s)" \
+            % (app, os.path.join(local_projects_path, app, app + '.ini'))
+    elif not os.path.exists(os.path.join(local_servers_path, app)):
+        print "%s seems unreachable (%s)" \
+            % (app, os.path.join(local_servers_path, app + '.ini'))
     else:
-        print "Updating %s .ini file and listeners..." % app
-        with cd(remote_projects_path):
-            run('mkdir -p apps')
-            put(os.path.join(local_apps_ini_path, app + '.ini'),
-                os.path.join(remote_apps_ini_path, app + '.ini'))
-            run('mkdir -p listeners')
-            run('mkdir -p listeners/locations')
-            put(os.path.join(local_listeners_path, 'server'),
-                os.path.join(remote_listeners_path,'server'))
-            put(os.path.join(local_listeners_path,'locations', app),
-                os.path.join(remote_listeners_path,'locations'))
-            run('mkdir -p logs && cd logs && touch %s.log' % app)
-        print "Done."
-
-    # Fetch generated logs.
-    _fetch_log(app=app)
+        print "Updating server..."
+        with cd(remote_projects_path), hide('everything'):
+            run('mkdir -p servers')
+            put(os.path.join(local_servers_path, app),
+                remote_servers_path)
+            run('mkdir -p logs && cd logs && touch %s.%s.log' % (_get_current_role(), app))
+            
+            push(app=app)
+            instruct_server(server_action='reload')
 
 
-def push(app=None, config='config.ini'):
+def push(app=None, config='conf/config.ini'):
     """
     Push the latest app's source code into several remote
     hosts.
@@ -86,7 +84,11 @@ def push(app=None, config='config.ini'):
     :param config: Configuration file.
     """
 
-    parser = _load_config(config)
+    if os.path.exists(config):
+        parser = _load_config(config)
+    else:
+        print "Are you in the right path?"
+        sys.exit(1)
 
     # Local paths.
     local_projects_path = parser.get('iowa', 'local_projects_path')
@@ -98,9 +100,9 @@ def push(app=None, config='config.ini'):
     else:
         print "Pushing %s source code..." % app
         with cd(remote_projects_path):
+            run('mkdir -p %s' % app)
             put('%s' % os.path.join(local_projects_path, app),
                 '%s' % remote_projects_path)
-        print "Done."
 
 
 def instruct_server(server_action=None):
@@ -119,88 +121,62 @@ def instruct_server(server_action=None):
         print "Unknown server action"
 
 
-def run_uwsgi(server_action=None, config='config.ini'):
-    """
-    Run uwsgi with 'emperor mode' in the hosts.
-    :param server_action: Should also start/reload the server
-                          afterwards?.
-    :param config: Configuration file.
-    """
-
-    parser = _load_config(config)
-
-    # Remote paths.
-    remote_projects_path = parser.get('iowa', 'remote_projects_path')
-    remote_apps_ini_path = parser.get('iowa', 'remote_apps_ini_path')
-    remote_logs_path = parser.get('iowa', 'remote_logs_path')
-
-    # Make sure log and socket folders exist.
-    with cd(remote_projects_path):
-        run('mkdir -p logs && cd logs && touch uwsgi.log')
-        run('mkdir -p sockets')
-
-    # Run uWSGI in emperor mode.
-    run('uwsgi --master --emperor %s --daemonize %s'
-        ' --die-on-term --uid www-data --gid www-data'
-        % (os.path.join(remote_projects_path, remote_apps_ini_path),
-           os.path.join(remote_logs_path, 'uwsgi.log')))
-
-
-
-def scale(app=None, workers=None, config='config.ini'):
+def scale(app=None, process=None, workers=None, config='conf/config.ini'):
     """
     Scale a specific app into several remote hosts.
-    :param app: The app to scale.
+    :param app: The targeted app.
+    :param process: The process to scale.
     :param workers: The desired number of workers.
     :param config: Configuration file.
     """
 
-    parser = _load_config(config)
+    if os.path.exists(config):
+        parser = _load_config(config)
+    else:
+        print "Are you in the right path?"
+        sys.exit(1)
 
     # Local paths.
     local_projects_path = parser.get('iowa', 'local_projects_path')
-    local_apps_ini_path = parser.get('iowa', 'local_apps_ini_path')
-
-    if not os.path.exists(os.path.join(local_projects_path, app)):
-        print "%s not found in you local" % app
-    elif not workers:
-        print "Please specify the number of workers"
-    else:
-        app_parser = SafeConfigParser()
-        file_path = os.path.join(local_apps_ini_path, app + '.ini')
-        app_parser.read(file_path)
-
-        current_workers = app_parser.get('uwsgi', 'workers')
-        app_parser.set('uwsgi', 'workers', workers)
-        print "Scaling %s from %s to %s workers..." \
-            % (app, current_workers, workers)
-
-        with open(file_path, 'w') as configfile:    # save
-            app_parser.write(configfile)
-        print "Done."
-
-        # Deploy changes.
-        deploy(app=app, config=config)
-
-
-def _fetch_log(app=None, config='config.ini'):
-    """
-    Fetch the latest logs.
-    :param app: The target app.
-    :param config: Configuration file.
-    """
-
-    parser = _load_config(config)
-
+    
     # Remote paths.
     remote_projects_path = parser.get('iowa', 'remote_projects_path')
 
-    print "Fetching generated log..."
-    role = _get_current_role()
-    local('mkdir -p logs')
-    with cd(remote_projects_path):
-        get('logs/%s.log' % app, 'logs/%s.%s.log' % (role, app))
-        get('logs/uwsgi.log', 'logs/%s.uwsgi.log' % role)
+    if not os.path.exists(os.path.join(local_projects_path, app)):
+        print "%s not found in you local" % app
+    elif not process:
+        print "Please specify the process type"
+    elif not workers:
+        print "Please specify the number of workers"
+    else:
+        # Read the .ini.
+        file_path = os.path.join(local_projects_path, app, app + '.ini')
+        uwsgi_ini = SafeConfigParser()
+        uwsgi_ini.read(file_path)
+        
+        # Read the Procfile.
+        procfile = YamlReader(os.path.join(local_projects_path, app))
+        declared_processes = procfile.get_processes()
+
+        if not process in declared_processes:
+            print "Unknown %s process" % process
+        else:
+            # Write the new configuration in the app's .ini file.
+            uwsgi_ini.set('uwsgi', 'workers', workers)
+            with open(file_path, 'w') as configfile:
+                uwsgi_ini.write(configfile)
+            with hide('everything'):
+                if int(workers) > 0:
+                    # Scaling... and updating remote .ini file.
+                    print "Scaling %s:%s to %s workers..." \
+                        % (app, process, workers)
+                    put(file_path, os.path.join(remote_projects_path, app, app + '.ini'))
+                    with cd(os.path.join(remote_projects_path, app)):
+                        run('%s' % declared_processes[process])
+                else:
+                    # Scaling to 0 workers. The app will be stopped.
+                    print "Stopping %s:%s ..." % (app, process)
+                    run('kill -INT `cat /tmp/%s.pid`' % app)
 
 
 def _get_current_role():
